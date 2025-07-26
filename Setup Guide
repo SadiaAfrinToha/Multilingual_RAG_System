@@ -1,0 +1,110 @@
+echo "# Setup Guide
+
+This guide walks you through setting up and running the Bangla-English Multilingual RAG system in **Google Colab** or **locally**.
+
+## Prerequisites
+
+- Python 3.8+
+- A **Bangla/English PDF file** (e.g., textbook or notes)
+- Hugging Face Transformers
+- Astra DB account (for vector storage)
+- (Optional) OpenAI API key
+
+## 1. Install Dependencies
+
+\`\`\`python
+!pip install -q langchain-community cassio datasets langchain openai tiktoken PyPDF2 transformers
+\`\`\`
+
+## 2. Upload Your PDF File
+
+\`\`\`python
+from google.colab import files
+uploaded = files.upload()
+\`\`\`
+
+## 3. Extract and Chunk Text
+
+\`\`\`python
+from PyPDF2 import PdfReader
+pdfreader = PdfReader('your_file.pdf')
+raw_text = ''.join([page.extract_text() or '' for page in pdfreader.pages])
+
+from langchain.text_splitter import CharacterTextSplitter
+text_splitter = CharacterTextSplitter(chunk_size=800, chunk_overlap=200)
+texts = text_splitter.split_text(raw_text)
+\`\`\`
+
+## 4. Initialize Astra DB
+
+1. Create a free database at [Astra](https://www.datastax.com/astra)
+2. Download the secure connect token
+
+\`\`\`python
+import cassio
+cassio.init(token=\"Your_Astra_Token\", database_id=\"Your_Database_ID\")
+\`\`\`
+
+## 5. Embed Text and Store in Vector DB
+
+\`\`\`python
+from langchain.embeddings import HuggingFaceEmbeddings
+from langchain.vectorstores.cassandra import Cassandra
+
+embedding = HuggingFaceEmbeddings(model_name=\"all-MiniLM-L6-v2\")
+vector_store = Cassandra(
+    embedding=embedding,
+    table_name=\"qa_mini_demo\",
+    session=None,
+    keyspace=\"rag_bangla_db\"
+)
+vector_store.add_texts(texts[:50])
+\`\`\`
+
+## 6. Load LLM (Flan-T5)
+
+\`\`\`python
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
+from langchain.llms import HuggingFacePipeline
+
+tokenizer = AutoTokenizer.from_pretrained(\"google/flan-t5-base\")
+model = AutoModelForSeq2SeqLM.from_pretrained(\"google/flan-t5-base\")
+pipe = pipeline(\"text2text-generation\", model=model, tokenizer=tokenizer)
+llm = HuggingFacePipeline(pipeline=pipe)
+\`\`\`
+
+## 7. Start Q&A Interaction
+
+\`\`\`python
+from langchain.indexes.vectorstore import VectorStoreIndexWrapper
+index = VectorStoreIndexWrapper(vectorstore=vector_store)
+
+query = input(\"Enter your question (Bangla or English): \")
+response = index.query(query, llm=llm)
+print(\"Answer:\", response)
+\`\`\`
+
+## 8. Log Q&A in Database (Optional)
+
+\`\`\`python
+from cassio.config import get_driver_session
+from datetime import datetime
+import uuid
+
+session = get_driver_session()
+session.execute(\"\"\"
+    CREATE TABLE IF NOT EXISTS rag_bangla_db.qa_logs (
+        id UUID PRIMARY KEY,
+        question TEXT,
+        answer TEXT,
+        timestamp TIMESTAMP
+    );
+\"\"\")
+
+session.execute(\"\"\"
+    INSERT INTO rag_bangla_db.qa_logs (id, question, answer, timestamp)
+    VALUES (%s, %s, %s, %s)
+\"\"\", (uuid.uuid4(), query, response, datetime.utcnow()))
+\`\`\`
+
+" > README.md
